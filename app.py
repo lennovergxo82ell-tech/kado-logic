@@ -71,14 +71,32 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# データ保存先
+# データ保存先（ローカル fallback 用）
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
 SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
 
+@st.cache_resource
+def get_supabase():
+    """Supabaseクライアントを返す。Secrets未設定の場合はNone（ローカル動作）。"""
+    url = st.secrets.get("SUPABASE_URL", "")
+    key = st.secrets.get("SUPABASE_ANON_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
 def load_sessions() -> list:
+    sb = get_supabase()
+    if sb:
+        res = sb.table("sessions").select("*").order("session_number", desc=False).execute()
+        return res.data
     if not os.path.exists(SESSIONS_FILE):
         return []
     with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
@@ -86,6 +104,10 @@ def load_sessions() -> list:
 
 
 def save_session(session: dict):
+    sb = get_supabase()
+    if sb:
+        sb.table("sessions").insert(session).execute()
+        return
     sessions = load_sessions()
     sessions.append(session)
     with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
@@ -94,9 +116,26 @@ def save_session(session: dict):
 
 def save_image(image_bytes: bytes, session_id: str, ext: str = "jpg") -> str:
     filename = f"{session_id}.{ext}"
+    sb = get_supabase()
+    if sb:
+        mime = "image/png" if ext == "png" else "image/jpeg"
+        sb.storage.from_("kado-images").upload(filename, image_bytes, {"content-type": mime})
+        return filename
     with open(os.path.join(IMAGES_DIR, filename), "wb") as f:
         f.write(image_bytes)
     return filename
+
+
+def get_image_src(s: dict):
+    """セッションから表示用の画像ソース（URLまたはローカルパス）を返す。"""
+    filename = s.get("image_filename", "")
+    if not filename:
+        return None
+    sb = get_supabase()
+    if sb:
+        return sb.storage.from_("kado-images").get_public_url(filename)
+    path = os.path.join(IMAGES_DIR, filename)
+    return path if os.path.exists(path) else None
 
 
 def build_past_context(sessions: list) -> str:
@@ -414,9 +453,9 @@ with tab_history:
             label = f"レッスン#{s['session_number']}　({date_str})　総合 {s.get('overall_score','?')}点"
 
             with st.expander(label):
-                img_path = os.path.join(IMAGES_DIR, s.get("image_filename", ""))
-                if os.path.exists(img_path):
-                    st.image(img_path, use_container_width=True)
+                img_src = get_image_src(s)
+                if img_src:
+                    st.image(img_src, use_container_width=True)
 
                 materials = s.get("flower_materials", [])
                 if materials:

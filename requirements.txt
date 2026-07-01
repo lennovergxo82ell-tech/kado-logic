@@ -2,3 +2,4 @@ streamlit
 anthropic
 pillow
 pandas
+supabase
